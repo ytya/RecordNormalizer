@@ -1,0 +1,29 @@
+[project]
+name = "RecordNormalizer"
+version = "0.1.0"
+description = ""
+authors = ["ytya <ytyadev@gmail.com>"]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy < 2",
+    "tqdm",
+    "pillow",
+    "flet",
+    "fire",
+    "matplotlib",
+    "soundfile",
+    "librosa",
+    "plotly-resampler",
+    "sounddevice",
+    "audiofile",
+    "pydub>=0.25.1",
+]
+
+[dependency-groups]
+dev = [
+    "jupyterlab>=4.3.0",
+]
+
+[tool.ruff]
+line-length = 119
