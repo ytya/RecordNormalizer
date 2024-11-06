@@ -1,5 +1,5 @@
 import dash
-from dash import dcc, html, no_update, callback_context
+from dash import dcc, html, no_update
 from dash.dependencies import Input, Output, State
 import plotly.graph_objs as go
 import numpy as np
@@ -13,17 +13,11 @@ from plotly.subplots import make_subplots
 import plotly
 import time
 import gc
-from dataclasses import dataclass
-from flask import request
+from dataclasses import dataclass, asdict
+import json
 
 
-def error_handler(err):
-    print(f"The app raised the following exception: {err}")
-
-
-# flask_app = flask.Flask(__name__)
-# app = dash.Dash(__name__, server=flask_app)
-app = dash.Dash(__name__, on_error=error_handler)
+app = dash.Dash(__name__)
 
 
 @dataclass
@@ -34,9 +28,22 @@ class SessionData:
 
 _session_data: dict[str, SessionData] = {}
 _play_timestamp: dict[str, float] = {}
-src_dir = Path(r"D:\ytya\Music\MusicBee\Library\Ripped Files\RECORDER")
-dst_dir = Path(r"D:\ytya\Music\MusicBee\Library\Ripped Files\RECORDER2")
-colors = plotly.colors.DEFAULT_PLOTLY_COLORS
+COLORS = plotly.colors.DEFAULT_PLOTLY_COLORS
+COOKIE_NAME = "record_normalizer"
+DEFAULT_COOKIE = json.dumps({"src_dir": "", "dst_dir": ""})
+
+
+@dataclass
+class CookieData:
+    src_dir: str
+    dst_dir: str
+
+    @staticmethod
+    def get_cookie() -> "CookieData":
+        return CookieData(**json.loads(dash.callback_context.cookies.get(COOKIE_NAME, DEFAULT_COOKIE)))
+
+    def set_cookie(self) -> None:
+        dash.callback_context.response.set_cookie(COOKIE_NAME, json.dumps(asdict(self)), max_age=None)
 
 
 class UiId(StrEnum):
@@ -62,9 +69,8 @@ class UiId(StrEnum):
 
 
 def create_layout():
-    # UIの定義
+    # UI定義
     session_id = str(uuid.uuid4())
-    audio_names = [p.name for p in sorted(list(src_dir.glob("*"))) if p.suffix.lower() in (".mp3", ".flac")]
     db_slider = {"min": -15, "max": 0, "step": 0.5, "value": -6, "marks": {v: str(v) for v in range(-15, 1)}}
     return html.Div(
         [
@@ -72,9 +78,9 @@ def create_layout():
             # ファイル読み込みボタン
             html.Div(
                 [
-                    dcc.Dropdown(id=UiId.DRP_INPUT_FILE, options=audio_names, style={"flexGrow": 4}),
+                    dcc.Dropdown(id=UiId.DRP_INPUT_FILE, options=[], style={"flexGrow": 4}),
                     html.Button("設定", id=UiId.BTN_SRC_DIR, style={"flexGrow": 1}),
-                    dcc.Input(id=UiId.INPUT_SRC_DIR, value=str(src_dir), style={"flexGrow": 10}),
+                    dcc.Input(id=UiId.INPUT_SRC_DIR, value="", style={"flexGrow": 10}),
                 ],
                 style={
                     "display": "flex",
@@ -89,7 +95,7 @@ def create_layout():
                 [
                     dcc.Input(id=UiId.INPUT_DST_NAME, value="", style={"flexGrow": 4}),
                     html.Button("保存", id=UiId.BTN_SAVE, style={"flexGrow": 1}),
-                    dcc.Input(id=UiId.INPUT_DST_DIR, value=str(dst_dir), style={"flexGrow": 10}),
+                    dcc.Input(id=UiId.INPUT_DST_DIR, value="", style={"flexGrow": 10}),
                 ],
                 style={
                     "display": "flex",
@@ -198,6 +204,23 @@ def create_vline(name: str, x: float, color: str, axis: int) -> dict:
     }
 
 
+# 初期化
+@app.callback(
+    [
+        Output(UiId.INPUT_SRC_DIR, "value"),
+        Output(UiId.INPUT_DST_DIR, "value"),
+        Output(UiId.DRP_INPUT_FILE, "options"),
+    ],
+    [Input(UiId.STORE_SESSION_ID, "data")],
+)
+def init_dir(session_id: str) -> None:
+    cookie_data = CookieData.get_cookie()
+    audio_names = [
+        p.name for p in sorted(list(Path(cookie_data.src_dir).glob("*"))) if p.suffix.lower() in (".mp3", ".flac")
+    ]
+    return [cookie_data.src_dir, cookie_data.dst_dir, audio_names]
+
+
 # 描画範囲更新
 @app.callback(
     Output(UiId.GRAPH, "figure", allow_duplicate=True),
@@ -221,9 +244,14 @@ def update_fig(relayoutdata: dict, session_id: str):
         Output(UiId.INPUT_START, "value"),
         Output(UiId.INPUT_END, "value"),
     ],
-    [Input(UiId.DRP_INPUT_FILE, "value"), State(UiId.STORE_SESSION_ID, "data"), State(UiId.CHK_Y_FIXED, "value")],
+    [
+        Input(UiId.DRP_INPUT_FILE, "value"),
+        State(UiId.STORE_SESSION_ID, "data"),
+        State(UiId.INPUT_SRC_DIR, "value"),
+        State(UiId.CHK_Y_FIXED, "value"),
+    ],
 )
-def load_file(filename: str, session_id: str, y_fixed: list[str]):
+def load_file(filename: str, session_id: str, src_dir: str, y_fixed: list[str]):
     if filename is None:
         return no_update
 
@@ -237,7 +265,7 @@ def load_file(filename: str, session_id: str, y_fixed: list[str]):
         gc.collect()
 
     print("filename:", filename)
-    audio = AudioData(src_dir / filename)
+    audio = AudioData(Path(src_dir) / filename)
 
     # 波形プロット
     # x = pd.to_datetime(audio.times, unit="s")
@@ -246,7 +274,7 @@ def load_file(filename: str, session_id: str, y_fixed: list[str]):
         go.Scattergl(
             mode="lines",
             name="L",
-            line=dict(width=1, color=colors[0]),
+            line=dict(width=1, color=COLORS[0]),
         ),
         hf_x=audio.times,
         hf_y=audio.signal[:, 0].astype(np.float16),
@@ -257,7 +285,7 @@ def load_file(filename: str, session_id: str, y_fixed: list[str]):
         go.Scattergl(
             mode="lines",
             name="R",
-            line=dict(width=1, color=colors[0]),
+            line=dict(width=1, color=COLORS[0]),
         ),
         hf_x=audio.times,
         hf_y=audio.signal[:, 1].astype(np.float16),
@@ -277,18 +305,25 @@ def load_file(filename: str, session_id: str, y_fixed: list[str]):
 
 # 入力フォルダ設定
 @app.callback(
-    Output(UiId.DRP_INPUT_FILE, "options"), Input(UiId.BTN_SRC_DIR, "n_clicks"), State(UiId.INPUT_SRC_DIR, "value")
+    Output(UiId.DRP_INPUT_FILE, "options", allow_duplicate=True),
+    Input(UiId.BTN_SRC_DIR, "n_clicks"),
+    State(UiId.INPUT_SRC_DIR, "value"),
+    prevent_initial_call=True,
 )
 def change_src_dir(n_clicks: int, src_dir: str):
     if n_clicks is None:
         return no_update
 
+    cookie_data = CookieData.get_cookie()
+    cookie_data.src_dir = src_dir
+    cookie_data.set_cookie()
     audio_names = [p.name for p in sorted(list(Path(src_dir).glob("*"))) if p.suffix.lower() in (".mp3", ".flac")]
     return audio_names
 
 
 # 保存
 @app.callback(
+    Output(UiId.INPUT_DST_DIR, "value", allow_duplicate=True),  # OutputがないとCookieが保存されない
     Input(UiId.BTN_SAVE, "n_clicks"),
     State(UiId.STORE_SESSION_ID, "data"),
     State(UiId.INPUT_DST_DIR, "value"),
@@ -299,6 +334,7 @@ def change_src_dir(n_clicks: int, src_dir: str):
     State(UiId.SLIDER_L_LIMIT, "value"),
     State(UiId.SLIDER_R_COMPRESS, "value"),
     State(UiId.SLIDER_R_LIMIT, "value"),
+    prevent_initial_call=True,
 )
 def save(
     n_clicks: int,
@@ -315,12 +351,18 @@ def save(
     if n_clicks is None:
         return no_update
 
+    cookie_data = CookieData.get_cookie()
+    cookie_data.dst_dir = dst_dir
+    cookie_data.set_cookie()
+
     data = _session_data.get(session_id, None)
     if data is None:
-        return no_update
+        return dst_dir
 
     data.audio.save(Path(dst_dir) / f"{dst_name}.mp3", start, end, l_compress, l_limit, r_compress, r_limit)
     print("saved")
+
+    return dst_dir
 
 
 # 再生
@@ -393,14 +435,14 @@ def change_value(
     for _ in range(len(fig_data), 10):
         fig_data.append({})
     len_signal = len(data.audio.signal) / data.audio.sr
-    fig_data[2] = create_hline("l-compress", db_to_amp(l_compress), len_signal, colors[1], 1)
-    fig_data[3] = create_hline("l-limit", db_to_amp(l_limit), len_signal, colors[2], 1)
-    fig_data[4] = create_vline("start", input_start, colors[3], 1)
-    fig_data[5] = create_vline("end", data.audio.end_time + input_end, colors[3], 1)
-    fig_data[6] = create_hline("r-compress", db_to_amp(r_compress), len_signal, colors[1], 2)
-    fig_data[7] = create_hline("r-limit", db_to_amp(r_limit), len_signal, colors[2], 2)
-    fig_data[8] = create_vline("start", input_start, colors[3], 2)
-    fig_data[9] = create_vline("end", data.audio.end_time + input_end, colors[3], 2)
+    fig_data[2] = create_hline("l-compress", db_to_amp(l_compress), len_signal, COLORS[1], 1)
+    fig_data[3] = create_hline("l-limit", db_to_amp(l_limit), len_signal, COLORS[2], 1)
+    fig_data[4] = create_vline("start", input_start, COLORS[3], 1)
+    fig_data[5] = create_vline("end", data.audio.end_time + input_end, COLORS[3], 1)
+    fig_data[6] = create_hline("r-compress", db_to_amp(r_compress), len_signal, COLORS[1], 2)
+    fig_data[7] = create_hline("r-limit", db_to_amp(r_limit), len_signal, COLORS[2], 2)
+    fig_data[8] = create_vline("start", input_start, COLORS[3], 2)
+    fig_data[9] = create_vline("end", data.audio.end_time + input_end, COLORS[3], 2)
 
     if len(sync):
         r_compress = l_compress
